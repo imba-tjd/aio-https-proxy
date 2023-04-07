@@ -90,7 +90,7 @@ async def main_handler(client_reader: asyncio.StreamReader, client_writer: async
     headers = dict(tuple(line.split(b': ')) for line in headers_raw.split(b'\r\n'))
 
     cip = get_client_ip(headers, client_writer)
-    logger.info('\x1B[32m%d: %s CONNECT %s%s\x1B[m', sno, cip, host, (':%d' % port if port != 443 else ''))
+    logger.info('\x1B[32m%3d: %s CONNECT %s%s\x1B[m', sno, cip, host, (':%d' % port if port != 443 else ''))
 
     try:
         async with asyncio.timeout(3):
@@ -103,13 +103,13 @@ async def main_handler(client_reader: asyncio.StreamReader, client_writer: async
         raise ClientError(502)
     except ConnectionError:  # 此处应该仅为客户端出错
         client_writer.transport.abort()
-        logger.debug('\x1B[31m%d: ConnectionError\x1B[m', sno, stack_info=True)
+        logger.debug('\x1B[31m%3d: ConnectionError\x1B[m', sno, stack_info=True)
         if locals()['upstream_writer']:
-            logger.debug('\x1B[31m%d: CloseUpstream\x1B[m', sno)
+            logger.debug('\x1B[31m%3d: CloseUpstream\x1B[m', sno)
             upstream_writer.close()  # type: ignore
         return
     except:
-        logger.exception('\x1B[31m%d: open_connection failed\x1B[m', sno)
+        logger.exception('\x1B[31m%3d: open_connection failed\x1B[m', sno)
         raise ClientError(500)
 
     # upstream_reader = asyncio_extra.TimeoutStreamReader.from_super(upstream_reader, 15)
@@ -123,7 +123,7 @@ async def main_handler(client_reader: asyncio.StreamReader, client_writer: async
         except asyncio.TimeoutError:
             client_writer.transport.abort()
         except:
-            logger.exception('\x1B[31m%d: Exception during connection\x1B[m', sno)
+            logger.exception('\x1B[31m%3d: Exception during connection\x1B[m', sno)
             client_writer.transport.abort()
 
 
@@ -134,10 +134,10 @@ async def handler(client_reader: asyncio.StreamReader, client_writer: asyncio.St
 
     try:
         await main_handler(client_reader, client_writer, sno)
-    except UnsupportedError as e:
-        logger.info('\x1B[33m%d: %s\x1B[m', sno, e.msg)
-        raise
     except ClientError as e:
+        if isinstance(e, UnsupportedError):
+            logger.debug('\x1B[33m%3d: %s\x1B[m', sno, e.msg)
+
         if client_writer.is_closing():
             return
         client_writer.write(e.format_msg)
@@ -147,9 +147,9 @@ async def handler(client_reader: asyncio.StreamReader, client_writer: asyncio.St
         client_writer.transport.abort()
     except:
         client_writer.transport.abort()
-        logger.exception('\x1B[31m%d: Exception during handler\x1B[m', sno)
+        logger.exception('\x1B[31m%3d: Exception during handler\x1B[m', sno)
     finally:
-        logger.info('%d: Connection ended', sno)
+        logger.info('%3d: Connection ended', sno)
 
 
 async def server(port: int = 1080):
@@ -161,7 +161,7 @@ async def server(port: int = 1080):
 
 if __name__ == '__main__':
     log_format = '\x1B[36m%(asctime)s\x1B[m %(levelname)s: %(message)s'
-    logging.basicConfig(format=log_format, level=logging.INFO)
+    logging.basicConfig(format=log_format, level=logging.DEBUG)
     try:
         asyncio.run(server())
     except KeyboardInterrupt:

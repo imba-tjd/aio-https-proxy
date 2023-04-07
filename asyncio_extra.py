@@ -49,7 +49,7 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         if data:
             writer.write(data)
         elif reader.at_eof():
-            writer.write_eof()
+            writer.close()
             await writer.wait_closed()
             return
         else:
