@@ -149,7 +149,7 @@ async def handler(client_reader: asyncio.StreamReader, client_writer: asyncio.St
         client_writer.transport.abort()
         logger.exception('\x1B[31m%3d: Exception during handler\x1B[m', sno)
     finally:
-        logger.info('%3d: Connection ended', sno)
+        logger.debug('%3d: Connection ended', sno)
 
 
 async def server(port: int = 1080):

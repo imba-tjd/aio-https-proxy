@@ -2,7 +2,16 @@
 
 A proxy server that supports and only supports HTTP CONNECT.
 
-Current State: Alpha
+Project State: Alpha. Tested that `curl https://example.com -x 127.0.0.1` works.
+
+## Learnt
+
+* If this is behind a reverse proxy, that proxy must be on L4, which make this basically useless
+
+### IDN why
+
+* Browser sometimes sends nothing, which triggers *hello is empty*
+* TimeoutStreamReader and Writer breaks things, so does writer.write_eof() in pipe
 
 ## TODO
 
