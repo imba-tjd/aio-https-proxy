@@ -49,7 +49,17 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         if data:
             writer.write(data)
         elif reader.at_eof():
-            writer.close()
+            writer.write_eof()
+            await writer.wait_closed()
             return
         else:
             await writer.drain()
+
+class AtomicInt:
+    def __init__(self, value: int = 0):
+        self.value = value
+
+    async def incr(self):
+        async with asyncio.Lock():
+            self.value += 1
+            return self.value
