@@ -13,7 +13,7 @@ SerialNum = count()
 class Utils:
     @staticmethod
     def timeout_patch(f, timeout: float):
-        @wraps
+        @wraps(f)
         async def wrapper(*args, **kw):
             async with asyncio.timeout(timeout):
                 return await f(*args, **kw)
@@ -21,15 +21,15 @@ class Utils:
 
     @staticmethod
     def reader_timeout_patch(r: asyncio.StreamReader, timeout = 15.0):
-        r.read = timeout_patch(r.read, timeout)
-        r.readline = timeout_patch(r.readline, timeout)
-        r.readexactly = timeout_patch(r.readexactly, timeout)
-        r.readuntil = timeout_patch(r.readuntil, timeout)
+        r.read = Utils.timeout_patch(r.read, timeout)
+        r.readline = Utils.timeout_patch(r.readline, timeout)
+        r.readexactly = Utils.timeout_patch(r.readexactly, timeout)
+        r.readuntil = Utils.timeout_patch(r.readuntil, timeout)
 
     @staticmethod
     def writer_timeout_patch(w: asyncio.StreamWriter, timeout = 15.0):
-        w.drain = timeout_patch(w.drain, timeout)
-        w.wait_closed = timeout_patch(w.wait_closed, timeout)
+        w.drain = Utils.timeout_patch(w.drain, timeout)
+        w.wait_closed = Utils.timeout_patch(w.wait_closed, timeout)
 
     @staticmethod
     async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -165,6 +165,7 @@ async def main_handler(client_reader: asyncio.StreamReader, client_writer: async
 
 async def handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
     sno = next(SerialNum)
+    Utils.reader_timeout_patch(client_reader)
 
     try:
         await main_handler(client_reader, client_writer, sno)
