@@ -1,24 +1,27 @@
-# AIO HTTPS PROXY
+# ASYNCIO HTTPS PROXY
 
-A proxy server that supports and only supports HTTP CONNECT.
+A simple proxy server that supports and only supports HTTP CONNECT.
 
-Project State: Alpha. Tested that `curl https://example.com -x 127.0.0.1` works.
+This is only a POC. Tested that `curl https://example.com -x 127.1` works. So the happy path is OK. However it has lots of Unhandled corner case.
+
+## Thoughts for now
+
+1. 双方正常结束。在pipe中处理了。
+2. 上游出错，客户端可以写入。则将出错信息返回给客户端。关闭双方连接。
+3. 客户端出错。关闭上游连接。
+4. 对于长时间空闲而关闭的连接，应忽略。
+5. 不应把upstream的连接嵌套在client中。
 
 ## Learnt
 
-* If this is behind a reverse proxy, that proxy must be on L4, which make this basically useless
+* If this is behind a reverse proxy, that proxy must be on L4, which make this basically useless. This is because the proxy acts both as server and client. A L7 reverse proxy won't forward CONNECT verb to the backend.
 
 ### IDN why
 
-* Browser sometimes sends nothing, which triggers *hello is empty*
-* TimeoutStreamReader and Writer breaks things, so does writer.write_eof() in pipe
+* Browser sometimes sends nothing, which triggers *hello is empty*. Maybe it's a kind of keepalive
+* TimeoutStreamReader and Writer breaks things, ~~so does writer.write_eof() in pipe~~
 
-## TODO
+## Won't fix
 
-* 加密：Proxy-Authorization: basic base64编码的user:pass。不满足时返回407 Proxy Authentication Required
-* 处理客户端慢连接攻击
-
-## 其他人的项目
-
-* https://github.com/mmatczuk/go-http-tunnel
-* https://github.com/jpillora/chisel
+* Proxy-Authorization
+* Deal with malicious client
