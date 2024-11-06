@@ -39,15 +39,19 @@ class Utils:
 
             if data:
                 writer.write(data)
-                await writer.drain() # low latency, not max bandwidth
+                await writer.drain()
             elif reader.at_eof():
-                writer.write_eof()
+                writer.close()
                 await writer.wait_closed()
             else:
                 assert False
 
+class ResetClientError(Exception):
+    '''abort the connection. not send msg to client'''
+    pass
 
 class ClientError(Exception):
+    '''send error msg to client. The arg can be (int, bytes) or bytes'''
     @property
     def msg(self) -> bytes:
         assert len(self.args) >= 1
@@ -69,11 +73,8 @@ class ClientError(Exception):
     @property
     def format_msg(self) -> bytes:
         if isinstance(self.args[0], bytes):
-            return b'HTTP/1.1 400 Bad Request\r\n\r\n%s\r\n\r\n' % self.msg
-        elif isinstance(self.args[0], int):
-            return b'HTTP/1.1 %d %s\r\n\r\n%s\r\n\r\n' % (self.code, self._msg_map[self.code], self.msg)
-        else:
-            assert False
+            self.args[0:1] = (400, self.args[0])
+        return b'HTTP/1.1 %d %s\r\nConnection:Close\r\n\r\n%s\r\n\r\n' % (self.code, self._msg_map[self.code], self.msg)
 
     _msg_map = {
         400: b'Bad Request',
@@ -108,88 +109,86 @@ def parse_hello(hello: bytes):
     return host, port
 
 
-def get_client_ip(headers: dict[bytes, bytes], writer: asyncio.StreamWriter):
-    if b'x-forwarded-for' in headers:
-        ip = headers[b'x-forwarded-for'].split(b',')[0]
-    elif b'x-real-ip' in headers:
-        ip = headers[b'x-real-ip']
-    else:
-        ip = writer.get_extra_info('peername')[0]  # perrname结果为(ip,port)
-    return str(ip)
-
-
-async def main_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, sno: int):
-    connect_hello = await client_reader.readline()
-
-    host, port = parse_hello(connect_hello)
-
-    headers_raw = await client_reader.readuntil(b'\r\n\r\n')
-
-    headers_raw = headers_raw.removesuffix(b'\r\n\r\n')
-    headers = dict(tuple(line.split(b': ', maxsplit=1)) for line in headers_raw.split(b'\r\n'))
-
-    cip = get_client_ip(headers, client_writer)
-    logger.info('\x1B[32m%3d: %s CONNECT %s%s\x1B[m', sno, cip, host, (f':{port}' if port != 443 else ''))
-
-    # Connect to upstream
+async def connect_upstream(host, port, sno: int):
     try:
         async with asyncio.timeout(3):
-            upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
-            client_writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
-            await client_writer.drain()
+            ur, uw = await asyncio.open_connection(host, port)
     except TimeoutError:
         raise ClientError(504)
     except socket.gaierror:
         raise ClientError(502)
-    except ConnectionError:  # 此处应该仅为客户端出错
-        client_writer.transport.abort()
-        logger.debug('\x1B[31m%3d: ConnectionError\x1B[m', sno, stack_info=True)
-        if locals()['upstream_writer']:
-            logger.debug('\x1B[31m%3d: CloseUpstream\x1B[m', sno)
-            upstream_writer.close()  # type: ignore
-        return
     except:
-        logger.exception('\x1B[31m%3d: open_connection failed\x1B[m', sno)
+        logger.exception('\x1B[31m%2d| connect_upstream failed\x1B[m', sno)
         raise ClientError(500)
 
-    async with asyncio.TaskGroup() as tg:
-        try:
-            tg.create_task(Utils.pipe(client_reader, upstream_writer))
-            tg.create_task(Utils.pipe(upstream_reader, client_writer))
-        except ConnectionError | TimeoutError:
-            client_writer.transport.abort()
-        except:
-            logger.exception('\x1B[31m%3d: Exception during connection\x1B[m', sno)
-            client_writer.transport.abort()
+    return ur, uw
 
 
-async def handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
-    sno = next(SerialNum)
-    Utils.reader_timeout_patch(client_reader)
+async def determine_target(cr: asyncio.StreamReader, sno: int):
+    try:
+        async with asyncio.timeout(3):
+            connect_hello = await cr.readline()
+    except TimeoutError as e:
+        raise ResetClientError(e)
+
+
+    host, port = parse_hello(connect_hello)
 
     try:
-        await main_handler(client_reader, client_writer, sno)
+        headers = (await cr.readuntil(b'\r\n\r\n')).removesuffix(b'\r\n\r\n')
+    except TimeoutError | LimitOverrunError | IncompleteReadError as e:
+        raise ResetClientError(e)
+
+    # headers = dict(tuple(line.split(b': ', maxsplit=1)) for line in headers_raw.split(b'\r\n'))
+    logger.debug('%3d| headers=%s', sno, headers)
+
+    return host, port
+
+
+async def handler(cr: asyncio.StreamReader, cw: asyncio.StreamWriter):
+    sno = next(SerialNum)
+
+    try:
+        host, port = await determine_target(cr, sno)
+
+        cip = cw.get_extra_info('peername')[0]
+        logger.info('\x1B[32m%3d| %s CONNECT to %s%s\x1B[m', sno, cip, host, (f':{port}' if port != 443 else ''))
+
+        ur, uw = await connect_upstream(host, port, sno)
+
+        try:
+            cw.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+            await cw.drain()
+
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(Utils.pipe(cr, uw))
+                tg.create_task(Utils.pipe(ur, cw))
+        except Exception as e:
+            logger.exception('\x1B[31m%2d| Exception during connection\x1B[m', sno)
+            uw.transport.abort()
+            raise ResetClientError(e)
+        finally:
+            uw.close()
+
     except ClientError as e:
         if isinstance(e, UnsupportedError):
-            logger.debug('\x1B[33m%3d: %s\x1B[m', sno, e.msg)
+            logger.debug('\x1B[33m%3d| %s\x1B[m', sno, e.msg)
 
-        if client_writer.is_closing():
-            return
-        client_writer.write(e.format_msg)
-        client_writer.close()
-        await client_writer.wait_closed()
-    except TimeoutError:
-        client_writer.transport.abort()
+        if cw.is_closing(): return
+        try: cw.write(e.format_msg)
+        except ConnectionResetError: pass
+    except ResetClientError:
+        cw.transport.abort()
     except:
-        client_writer.transport.abort()
-        logger.exception('\x1B[31m%3d: Exception during handler\x1B[m', sno)
+        logger.exception('\x1B[31m%2d| Exception during handler\x1B[m', sno)
     finally:
-        logger.debug('%3d: Connection ended', sno)
+        cw.close()
+        logger.info('%3d| Connection ended', sno)
 
 
 async def server(port):
     server = await asyncio.start_server(handler, port=port)
-    logger.info('Listening on ' + str(server.sockets[0].getsockname()[:2]))
+    logger.info('   Listening on ' + str(server.sockets[0].getsockname()[:2]))
 
     async with server:
         await server.serve_forever()
@@ -197,14 +196,20 @@ async def server(port):
 
 if __name__ == '__main__':
     log_format = '\x1B[36m%(asctime)s\x1B[m %(levelname)s: %(message)s'
-    logging.basicConfig(format=log_format, level=logging.DEBUG)
+    logging.basicConfig(format=log_format, level=logging.INFO)
 
-    if len(sys.argv) == 1:
-        port = 1080
-    else:
-        port = int(sys.argv[1])
+    port = 1080 if len(sys.argv) == 1 else int(sys.argv[1])
 
     try:
         asyncio.run(server(port))
     except KeyboardInterrupt:
         pass
+
+
+    # except ConnectionError:  # 此处应该仅为客户端出错
+    #     cw.transport.abort()
+    #     logger.debug('\x1B[31m%3d| ConnectionError\x1B[m', sno, stack_info=True)
+    #     if locals()['uw']:
+    #         logger.debug('\x1B[31m%3d| CloseUpstream\x1B[m', sno)
+    #         uw.close()  # type: ignore
+    #     return
