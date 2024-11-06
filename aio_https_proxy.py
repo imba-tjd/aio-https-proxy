@@ -73,7 +73,7 @@ class ClientError(Exception):
     @property
     def format_msg(self) -> bytes:
         if isinstance(self.args[0], bytes):
-            self.args[0:1] = (400, self.args[0])
+            self.args = (400, self.args[0], *self.args[1:])
         return b'HTTP/1.1 %d %s\r\nConnection:Close\r\n\r\n%s\r\n\r\n' % (self.code, self._msg_map[self.code], self.msg)
 
     _msg_map = {
@@ -136,7 +136,7 @@ async def determine_target(cr: asyncio.StreamReader, sno: int):
 
     try:
         headers = (await cr.readuntil(b'\r\n\r\n')).removesuffix(b'\r\n\r\n')
-    except TimeoutError | LimitOverrunError | IncompleteReadError as e:
+    except (TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError) as e:
         raise ResetClientError(e)
 
     # headers = dict(tuple(line.split(b': ', maxsplit=1)) for line in headers_raw.split(b'\r\n'))
@@ -178,6 +178,7 @@ async def handler(cr: asyncio.StreamReader, cw: asyncio.StreamWriter):
         try: cw.write(e.format_msg)
         except ConnectionResetError: pass
     except ResetClientError:
+        logger.debug('\x1B[31m%3d| ResetClientError\x1B[m', sno, stack_info=True)
         cw.transport.abort()
     except:
         logger.exception('\x1B[31m%2d| Exception during handler\x1B[m', sno)
@@ -204,12 +205,3 @@ if __name__ == '__main__':
         asyncio.run(server(port))
     except KeyboardInterrupt:
         pass
-
-
-    # except ConnectionError:  # 此处应该仅为客户端出错
-    #     cw.transport.abort()
-    #     logger.debug('\x1B[31m%3d| ConnectionError\x1B[m', sno, stack_info=True)
-    #     if locals()['uw']:
-    #         logger.debug('\x1B[31m%3d| CloseUpstream\x1B[m', sno)
-    #         uw.close()  # type: ignore
-    #     return
