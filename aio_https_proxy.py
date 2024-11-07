@@ -115,7 +115,7 @@ async def connect_upstream(host, port, sno: int):
             ur, uw = await asyncio.open_connection(host, port)
     except TimeoutError:
         raise ClientError(504)
-    except socket.gaierror:
+    except (socket.gaierror, ConnectionRefusedError):
         raise ClientError(502)
     except:
         logger.exception('\x1B[31m%2d| connect_upstream failed\x1B[m', sno)
@@ -165,8 +165,9 @@ async def handler(cr: asyncio.StreamReader, cw: asyncio.StreamWriter):
                 tg.create_task(Utils.pipe(ur, cw))
         except Exception as e:
             # read和write对于已关闭的socket都可能报错，忽略记录日志，断开所有链接。其余情况记录日志
-            if not (isinstance(e, ExceptionGroup) and all(isinstance(e2, ConnectionResetError) for e2 in e.exceptions)):
-                logger.exception('\x1B[31m%2d| Exception during connection\x1B[m', sno)
+            if not (isinstance(e, ExceptionGroup) and \
+                all(isinstance(e2, (ConnectionResetError, ConnectionAbortedError)) for e2 in e.exceptions)):
+                    logger.exception('\x1B[31m%2d| Exception during connection\x1B[m', sno)
             uw.transport.abort()
             raise ResetClientError(e)
         finally:
